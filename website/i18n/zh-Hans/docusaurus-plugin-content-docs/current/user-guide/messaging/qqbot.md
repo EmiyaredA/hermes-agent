@@ -86,6 +86,36 @@ platforms:
         model: "glm-asr"
 ```
 
+## 全量群聊背景，仅在被 @ 时回答
+
+先由群主在每个群的机器人管理中开启**获取群内全部消息**。QQ 随后通过已有的
+`GROUP_AND_C2C_EVENT` intent 推送 `GROUP_MESSAGE_CREATE`。再在机器人所属 Hermes
+profile 的配置中启用背景缓存：
+
+```yaml
+platforms:
+  qqbot:
+    extra:
+      group_context:
+        enabled: true
+        max_messages: 100
+        max_age_hours: 24
+        max_context_chars: 16000
+        max_message_chars: 2000
+```
+
+保存后重启网关。群白名单继续生效。普通消息只记录，不调用模型、不下载素材、不触发回复；
+被 @ 时，通过 `channel_context` 附带本群近期发言。两种 QQ 群事件按消息 ID 去重，避免重复回答。
+仅发送 @ 时会结合近期讨论回应。成功送达的机器人文字回复也进入背景。
+每个人原有的会话历史仍独立，无需修改 `group_sessions_per_user`。
+
+每群最多保留 100 条、最长 24 小时的文字、发言人标识、昵称和时间；以上配置可调整限制。
+缓存位于所属 profile 的 `cache/qqbot/<app-key>/group-context/`，按群分文件、原子更新，
+目录权限为 0700、文件为 0600，重启后可恢复。过期记录在该群下次收消息时清理。
+开启前的历史消息不会自动补回。背景图片等附件仅记录类型提示；语音只使用 QQ 自带 ASR 文本，
+不额外调用转写模型。将 `enabled` 设为 `false` 可停止记录与注入；已有缓存保留到显式删除。
+接收状态日志只记录群标识和计数，不记录聊天正文。
+
 ## 语音消息（STT）
 
 语音转写分两个阶段进行：

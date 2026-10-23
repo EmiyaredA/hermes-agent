@@ -97,7 +97,10 @@ _STT_PROVIDER_BASE_URLS = {
 _AUDIO_URL_EXTENSIONS = {".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"}
 
 
-class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
+from .group_inbound import GROUP_EVENTS, QQGroupContextMixin
+
+
+class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
     """QQ Bot adapter backed by the official QQ Bot WebSocket Gateway + REST API."""
 
     # QQ Bot API does not support editing sent messages.
@@ -153,6 +156,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._allow_from = _coerce_list(extra.get("allow_from") or extra.get("allowFrom"))
         self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
+        self._init_group_context(extra)
 
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -521,6 +525,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             if t == "READY":
                 if isinstance(d, dict):  # store session_id for resume
                     self._session_id = d.get("session_id")
+                    self._remember_qq_identity(d)
                     logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
             elif t == "RESUMED":
                 logger.info("[%s] Session resumed", self._log_tag)
@@ -574,6 +579,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _on_message(self, event_type: str, d: Any) -> None:
         if not isinstance(d, dict):
+            return
+        if event_type in GROUP_EVENTS:
+            await self._receive_group_message(event_type, d)
             return
         msg_id = str(d.get("id", ""))
         if not msg_id or self._dedup.is_duplicate(msg_id):
@@ -759,15 +767,6 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             d, msg_id, content, attachments_raw, timestamp, verbose=True,
             chat_id=user_openid, qq_chat_type="c2c", user_id=user_openid, chat_type="dm")
 
-    async def _handle_group_message(self, d, msg_id, content, author, timestamp) -> None:
-        group_openid = str(d.get("group_openid", ""))
-        member = str(author.get("member_openid", ""))
-        if not group_openid or not self._is_group_allowed(group_openid, member):
-            return
-        await self._ingest(
-            d, msg_id, self._strip_at_mention(content), d.get("attachments"), timestamp,
-            chat_id=group_openid, qq_chat_type="group", user_id=member, chat_type="group")
-
     async def _handle_guild_message(self, d, msg_id, content, author, timestamp) -> None:
         channel_id = str(d.get("channel_id", ""))
         if not channel_id:
@@ -801,7 +800,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     _INBOUND_HANDLERS = {
         "C2C_MESSAGE_CREATE": "_handle_c2c_message",
-        "GROUP_AT_MESSAGE_CREATE": "_handle_group_message",
+        "GROUP_AT_MESSAGE_CREATE": "_receive_group_message",
+        "GROUP_MESSAGE_CREATE": "_receive_group_message",
         "GUILD_MESSAGE_CREATE": "_handle_guild_message",
         "GUILD_AT_MESSAGE_CREATE": "_handle_guild_message",
         "DIRECT_MESSAGE_CREATE": "_handle_dm_message"}
@@ -815,7 +815,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _ingest(
         self, d: dict[str, Any], msg_id: str, content: str, attachments: Any, timestamp: str, *,
-        chat_id: str, qq_chat_type: str, verbose: bool = False, **source_kwargs: Any) -> None:
+        chat_id: str, qq_chat_type: str, verbose: bool = False,
+        channel_context: Optional[str] = None, **source_kwargs: Any) -> None:
         """Shared inbound tail: fold attachment transcripts/file info and quoted context
         into the text, drop empty events, remember the QQ chat kind and dispatch."""
         att = await self._process_attachments(attachments)
@@ -842,7 +843,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             source=self.build_source(chat_id=chat_id,** source_kwargs), text=text,
             message_type=self._detect_message_type(image_urls, image_media_types), raw_message=d,
             message_id=msg_id, media_urls=image_urls, media_types=image_media_types,
-            timestamp=self._parse_qq_timestamp(timestamp),
+            timestamp=self._parse_qq_timestamp(timestamp), channel_context=channel_context,
         )
         await self.handle_message(event)
 
@@ -1426,7 +1427,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return await self._send_text_to("c2c", openid, content, reply_to, keyboard)
 
     async def _send_group_text(self, group_openid, content, reply_to=None, keyboard=None) -> SendResult:
-        return await self._send_text_to("group", group_openid, content, reply_to, keyboard)
+        result = await self._send_text_to("group", group_openid, content, reply_to, keyboard)
+        await self._remember_group_reply(group_openid, content, result)
+        return result
 
     _TEXT_SENDERS = {"c2c": "_send_c2c_text", "group": "_send_group_text", "guild": "_send_guild_text"}
 

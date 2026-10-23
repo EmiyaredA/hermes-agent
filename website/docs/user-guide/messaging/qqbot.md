@@ -88,6 +88,40 @@ platforms:
         timeout: 60              # seconds per transcription request (default 60)
 ```
 
+## Full group background with mention-only replies
+
+The QQ group owner must enable **Receive all group messages** for this bot in each group.
+QQ then emits `GROUP_MESSAGE_CREATE` under the same `GROUP_AND_C2C_EVENT` intent.
+Enable bounded background storage separately in the owning Hermes profile:
+
+```yaml
+platforms:
+  qqbot:
+    extra:
+      group_context:
+        enabled: true
+        max_messages: 100
+        max_age_hours: 24
+        max_context_chars: 16000
+        max_message_chars: 2000
+```
+
+Restart the gateway after changing this configuration. Existing group allowlists still apply.
+Ordinary messages are recorded without model calls, downloads or replies. When the bot is
+mentioned, recent messages from that group are attached as background through `channel_context`.
+Both QQ event variants are deduplicated so the same request is answered once. A bare mention
+asks the bot to respond to the recent discussion. Successful bot text replies are also recorded.
+Per-user conversation histories remain separate; changing `group_sessions_per_user` is unnecessary.
+
+The cache stores bounded text, sender identifiers, display names and timestamps as private JSON
+files under the profile's `cache/qqbot/<app-key>/group-context/`. Each file is group-specific,
+atomically replaced and readable only by the operating-system owner. It survives gateway restarts;
+expired entries are removed when that group next receives a message. The adapter cannot retrieve
+messages sent before full-group intake was enabled. Background media is represented by labels;
+voice uses QQ-provided ASR text when available and does not invoke a separate transcription model.
+Disable `enabled` to stop new background storage and inclusion; existing cache files are retained
+until explicitly removed. No message contents are written to the intake status log.
+
 ## Voice Messages (STT)
 
 Voice transcription works in two stages:
