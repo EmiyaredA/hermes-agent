@@ -206,7 +206,7 @@ async def test_real_plugin_discovery_and_yaml_loader_enable_group_background(mon
 @pytest.mark.parametrize("text,expected", [
     ("<@group-self> 我刚刚说了什么", "我刚刚说了什么"),
     ("<@group-self> /new", "/new"),
-    ("<@group-self>", "请结合上面的本群近期聊天回应。"),
+    ("<@group-self>", "有人在群里叫你，接着当前话题自然回一句；没有明确话题就简短应一声。"),
 ])
 async def test_full_event_self_marker_dispatches_first_mention_with_background(text, expected):
     adapter = make_adapter()

@@ -112,7 +112,9 @@ mentioned, recent messages from that group are attached as background through `c
 Full-message mode recognizes QQ's `mentions[].is_you` marker even when its group-scoped
 mention ID differs from the READY identity and no separate AT event arrives. Mentioning another
 bot does not trigger a reply. Both QQ event variants are deduplicated so the same request is answered once. A bare mention
-asks the bot to respond to the recent discussion. Successful bot text replies are also recorded.
+asks the bot to naturally join the current discussion with a short reply. Background is for understanding
+the conversation; it does not request a transcript summary. Summaries and longer explanations follow
+explicit requests. Successful bot text replies are also recorded.
 Per-user conversation histories remain separate; changing `group_sessions_per_user` is unnecessary.
 
 The cache stores bounded text, sender identifiers, display names and timestamps as private JSON

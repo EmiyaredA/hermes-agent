@@ -90,7 +90,7 @@ class QQGroupContextMixin:
             content = re.sub(r"<@!?" + re.escape(identity) + r">\s*", "", content)
         content = self._strip_at_mention(content)
         if not content and not data.get("attachments") and not data.get("msg_elements"):
-            content = "请结合上面的本群近期聊天回应。"
+            content = "有人在群里叫你，接着当前话题自然回一句；没有明确话题就简短应一声。"
         logger.info("[%s] Group request admitted: group=%s event=%s context_chars=%d",
                     self._log_tag, group_id, event_type, len(context or ""))
         await self._ingest(
