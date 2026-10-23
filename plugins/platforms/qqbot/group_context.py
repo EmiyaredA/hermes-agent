@@ -87,7 +87,7 @@ class GroupContextStore:
         try:
             if path.stat().st_size > 8_000_000:
                 raise ValueError("oversized group context cache")
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
             if data.get("version") != 1 or data.get("group_id") != group_id:
                 raise ValueError("group context identity/version mismatch")
             messages = data["messages"]

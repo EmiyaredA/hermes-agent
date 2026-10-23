@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from hermes_constants import get_hermes_home
@@ -92,4 +92,4 @@ class QQGroupContextMixin:
     async def _remember_group_reply(self, group_id: str, content: str, result: Any) -> None:
         if result.success and result.message_id and self._is_group_allowed(group_id):
             await self._group_context.observe(group_id, str(result.message_id), "assistant", "机器人",
-                                              datetime.now(timezone.utc).isoformat(), content)
+                                              datetime.now(UTC).isoformat(), content)
