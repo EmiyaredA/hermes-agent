@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class GroupContextSettings:
     enabled: bool = False
+    archive_enabled: bool = False
     max_messages: int = 100
     max_age_hours: int = 24
     max_context_chars: int = 16000
@@ -35,6 +36,9 @@ class GroupContextSettings:
         enabled = value.get("enabled", False)
         if not isinstance(enabled, bool):
             raise ValueError("QQ group_context.enabled must be a boolean")
+        archive_enabled = value.get("archive_enabled", False)
+        if not isinstance(archive_enabled, bool):
+            raise ValueError("QQ group_context.archive_enabled must be a boolean")
         limits = {
             "max_messages": (100, 1, 500),
             "max_age_hours": (24, 1, 168),
@@ -47,7 +51,7 @@ class GroupContextSettings:
             if type(number) is not int or not lower <= number <= upper:
                 raise ValueError(f"QQ group_context.{key} must be an integer in {lower}..{upper}")
             parsed[key] = number
-        return cls(enabled=enabled, **parsed)
+        return cls(enabled=enabled, archive_enabled=archive_enabled, **parsed)
 
 
 def _inline(value: Any, limit: int) -> str:
@@ -118,7 +122,7 @@ class GroupContextStore:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
-    def _exchange(self, group_id: str, message: dict[str, Any], include_context: bool) -> str | None:
+    def _exchange(self, group_id: str, message: dict[str, Any], include_context: bool, context_prefix: str = "") -> str | None:
         path = self._path(group_id)
         now = time.time()
         cutoff = now - self.settings.max_age_hours * 3600
@@ -126,18 +130,20 @@ class GroupContextStore:
         existing = next((m for m in messages if m["id"] == message["id"]), None)
         if existing is None:
             messages.append(message)
-        elif message.get("attachments"):
-            existing["attachments"] = message["attachments"]
+        else:
+            for key in ("attachments", "files", "member"):
+                if message.get(key):
+                    existing[key] = message[key]
         messages = messages[-self.settings.max_messages:]
         self._write(path, group_id, messages)
         if not include_context:
             return None
-        return self._render([m for m in messages if m["id"] != message["id"]])
+        return self._render([m for m in messages if m["id"] != message["id"]], context_prefix)
 
-    def _render(self, messages: list[dict[str, Any]]) -> str | None:
+    def _render(self, messages: list[dict[str, Any]], prefix: str = "") -> str | None:
         if not messages:
-            return None
-        header = (
+            return prefix[:self.settings.max_context_chars] or None
+        header = prefix + (
             "[QQ group reply style]\n"
             "沿用你的人设，像群友一样接当前话茬。普通闲聊默认一句短话，回应完就停；"
             "只有对方明确要求总结、分析、详细步骤或长文时才展开。"
@@ -153,18 +159,23 @@ class GroupContextStore:
         remaining = self.settings.max_context_chars - len(header)
         lines = []
         for message in reversed(messages):
-            line = json.dumps({"time": message["timestamp"], "speaker": message["name"],
-                               "sender_id": message["sender"],
-                               "text": message["text"][:self.settings.max_message_chars]}, ensure_ascii=False)
+            entry = {"time": message["timestamp"], "speaker": message["name"], "sender_id": message["sender"],
+                     "text": message["text"][:self.settings.max_message_chars]}
+            if message.get("files"):
+                entry["files"] = message["files"]
+            if message.get("member"):
+                entry["member"] = message["member"]
+            line = json.dumps(entry, ensure_ascii=False)
             if len(line) + 1 > remaining:
                 break
             lines.append(line)
             remaining -= len(line) + 1
-        return header + "\n".join(reversed(lines)) if lines else None
+        return header + "\n".join(reversed(lines)) if lines else (prefix[:self.settings.max_context_chars] or None)
 
     async def observe(self, group_id: str, message_id: str, sender_id: str, name: str,
                       timestamp: str, text: str, *, include_context: bool = False,
-                      attachments: list[dict[str, Any]] | None = None) -> str | None:
+                      attachments: list[dict[str, Any]] | None = None, files: list[dict[str, Any]] | None = None,
+                      member: dict[str, Any] | None = None, context_prefix: str = "") -> str | None:
         if not self.settings.enabled:
             return None
         message = {"id": message_id, "sender": _inline(sender_id, 150),
@@ -173,9 +184,13 @@ class GroupContextStore:
         references = attachment_references({"attachments": attachments})
         if references:
             message["attachments"] = references
+        if files:
+            message["files"] = files
+        if member:
+            message["member"] = member
         async with self._locks.setdefault(group_id, asyncio.Lock()):
             try:
-                return await asyncio.to_thread(self._exchange, group_id, message, include_context)
+                return await asyncio.to_thread(self._exchange, group_id, message, include_context, context_prefix)
             except OSError:
                 # A cache failure must never retry an already-sent QQ reply or suppress a new request.
                 logger.warning("QQ group context cache write failed", exc_info=True)
@@ -190,3 +205,19 @@ class GroupContextStore:
         now = time.time()
         messages = [m for m in messages if now - self.settings.max_age_hours * 3600 <= m["received_at"] <= now + 60]
         return select_group_media(messages[-self.settings.max_messages:], query, current_id)
+
+
+    async def background_images(self, group_id: str, current_id: str) -> list[dict[str, Any]]:
+        async with self._locks.setdefault(group_id, asyncio.Lock()):
+            messages = await asyncio.to_thread(self._read, self._path(group_id), group_id)
+        result = []
+        for message in reversed(messages):
+            if message["id"] == current_id:
+                continue
+            for item in message.get("files", []):
+                if item.get("status") == "saved" and str(item.get("content_type", "")).startswith("image/"):
+                    result.append({**item, "sender_id": message["sender"], "name": message["name"],
+                                   "timestamp": message["timestamp"], "message_id": message["id"]})
+                if len(result) == 3:
+                    return result
+        return result

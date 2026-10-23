@@ -88,7 +88,7 @@ platforms:
         timeout: 60              # seconds per transcription request (default 60)
 ```
 
-## Full group background with mention-only replies
+## Full group archive with mention-only replies
 
 The QQ group owner must enable **Receive all group messages** for this bot in each group.
 QQ then emits `GROUP_MESSAGE_CREATE` under the same `GROUP_AND_C2C_EVENT` intent.
@@ -100,39 +100,49 @@ platforms:
     extra:
       group_context:
         enabled: true
-        max_messages: 100
+        archive_enabled: true    # keep all received messages and original files
+        max_messages: 100        # recent prompt window only
         max_age_hours: 24
         max_context_chars: 16000
         max_message_chars: 2000
 ```
 
 Restart the gateway after changing this configuration. Existing group allowlists still apply.
-Ordinary messages are recorded without model calls, downloads or replies. When the bot is
-mentioned, recent messages from that group are attached as background through `channel_context`.
-Full-message mode recognizes QQ's `mentions[].is_you` marker even when its group-scoped
-mention ID differs from the READY identity and no separate AT event arrives. Mentioning another
-bot does not trigger a reply. Both QQ event variants are deduplicated so the same request is answered once. A bare mention
-asks the bot to naturally join the current discussion with a short reply. Background is for understanding
-the conversation; it does not request a transcript summary. Summaries and longer explanations follow
-explicit requests. Successful bot text replies are also recorded.
-Per-user conversation histories remain separate; changing `group_sessions_per_user` is unnecessary.
+Ordinary messages never call the model or trigger replies. With `archive_enabled: true`, each
+received event is saved in full and all delivered attachments are downloaded as original bytes,
+including images, video, documents and audio. Audio is archived without transcription or conversion.
+Successful bot replies and bot media are also archived. This mode is opt-in; the default false keeps
+the lightweight bounded background mode with attachment references and on-demand retrieval.
 
-The cache stores bounded text, sender identifiers, display names and timestamps as private JSON
-files under the profile's `cache/qqbot/<app-key>/group-context/`. Each file is group-specific,
-atomically replaced and readable only by the operating-system owner. It survives gateway restarts;
-expired entries are removed when that group next receives a message. The adapter cannot retrieve
-messages sent before full-group intake was enabled. Passive media is represented by labels; up to
-three attachment references per message are also retained privately, without downloading anything.
-When an addressed request refers to an image, video or document, the adapter fetches attachments from
-the latest matching message in this group through the existing media pipeline. An exact filename
-selects that file instead; current or quoted attachments take precedence. Images enter the image
-input pipeline, while video/document paths are available to the agent's tools; receiving a file does
-not automatically mean its contents have been analyzed. Smalltalk and slash commands fetch nothing.
-QQ links can expire: on download failure the bot asks for a resend or quote. Older text-only caches
-remain readable but lost attachment references cannot be recovered. Passive voice uses QQ-provided
-ASR text when available and does not invoke a separate transcription model.
-Disable `enabled` to stop new background storage and inclusion; existing cache files are retained
-until explicitly removed. Intake logs record counts and admitted requests record background character counts, without message contents.
+Full archives live in the owning profile's `cache/qqbot/<app-key>/group-archive/<group-key>/`:
+`messages/*.json` preserves full message data; `messages.jsonl` indexes messages and real local file
+paths; `files/` stores originals; `members/` stores observed profiles and avatars. Each message and
+file is tied to the group, message ID, stable sender ID, display name and time. Equal display names
+do not merge identities. Directories are private (0700), files are 0600, and message files are
+atomically replaced. No archive retention limit is applied. Failed downloads are recorded, and
+interrupted pending records are recovered on the next startup or group event.
+
+The `max_messages`, `max_age_hours`, `max_message_chars` and `max_context_chars` settings bound only
+the recent prompt window; they never delete full archives. On a mention, the model receives recent
+messages with file paths and sender identity, up to three recent archived images through the image
+pipeline, the current speaker's identity/profile, and this group's complete index path for reading
+older history or other files with its tools. No media keywords are required. Profiles, bots and
+groups remain isolated. Per-user agent conversations remain independent.
+
+QQ's `mentions[].is_you` marker handles group-scoped IDs even without a separate AT event. Dual
+events are deduplicated for replies. A bare mention naturally joins the current discussion;
+background does not request a transcript summary. Only explicit requests call for summaries or
+long explanations. `/new` resets the individual conversation, not the group's full archive.
+
+Available profile fields retain their QQ provenance. Nicknames, stable IDs, roles and delivered
+avatar URLs are recorded; OpenID avatars are cached per member. Signatures are saved only when QQ
+provides them, otherwise marked `not_provided_by_qq` (unknown, not an empty signature). Avatars and
+profile data are background, never instructions.
+
+The existing bounded cache is imported on first use/startup, including recoverable attachment
+links. Messages or file links that QQ never delivered or an older version discarded cannot be
+reconstructed. Expired links are marked failed rather than represented as downloaded files.
+Disable `enabled` or `archive_enabled` to stop new full archiving; existing files are retained.
 
 ## Voice Messages (STT)
 

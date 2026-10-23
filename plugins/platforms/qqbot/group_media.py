@@ -20,16 +20,16 @@ def _text(value: Any, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-def attachment_references(data: dict[str, Any]) -> list[dict[str, str]]:
+def attachment_references(data: dict[str, Any], *, limit: int | None = MAX_GROUP_ATTACHMENTS) -> list[dict[str, str]]:
     """Retain only delivered attachment fields, including quoted media, with fixed bounds."""
-    candidates = data["attachments"][:MAX_GROUP_ATTACHMENTS] if isinstance(data.get("attachments"), list) else []
+    candidates = data["attachments"][:] if isinstance(data.get("attachments"), list) else []
     elements = data.get("msg_elements")
-    for element in (elements if isinstance(elements, list) else [])[:10]:
+    for element in (elements if isinstance(elements, list) else []):
         if isinstance(element, dict) and isinstance(element.get("attachments"), list):
-            candidates.extend(element["attachments"][:MAX_GROUP_ATTACHMENTS])
+            candidates.extend(element["attachments"])
     result = []
     seen = set()
-    for item in candidates[:30]:
+    for item in candidates:
         if not isinstance(item, dict):
             continue
         url = str(item.get("url") or "").strip()
@@ -48,7 +48,7 @@ def attachment_references(data: dict[str, Any]) -> list[dict[str, str]]:
                 reference[key] = item[key][:2000 if key == "asr_refer_text" else 8192]
         result.append(reference)
         seen.add(url)
-        if len(result) == MAX_GROUP_ATTACHMENTS:
+        if limit is not None and len(result) == limit:
             break
     return result
 

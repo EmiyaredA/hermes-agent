@@ -218,6 +218,8 @@ class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
             self._mark_connected()
             logger.info("[%s] Connected", self._log_tag)
             self._wire_plugin_handlers(None)
+            if self._group_context.settings.enabled and self._group_context.settings.archive_enabled:
+                self._group_archive_seed_task = asyncio.create_task(self._seed_available_group_archives())
             return True
         except Exception as exc:
             message = f"QQ startup failed: {exc}"
@@ -233,6 +235,8 @@ class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
         await cancel_task(self._listen_task)
         await cancel_task(self._heartbeat_task)
         self._listen_task = self._heartbeat_task = None
+        await cancel_task(self._group_archive_seed_task)
+        self._group_archive_seed_task = None
         await self._cleanup()
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self._log_tag)
@@ -816,10 +820,10 @@ class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
     async def _ingest(
         self, d: dict[str, Any], msg_id: str, content: str, attachments: Any, timestamp: str, *,
         chat_id: str, qq_chat_type: str, verbose: bool = False,
-        channel_context: Optional[str] = None, **source_kwargs: Any) -> None:
+        channel_context: Optional[str] = None, background_media: Optional[list] = None, **source_kwargs: Any) -> None:
         """Shared inbound tail: fold attachment transcripts/file info and quoted context
         into the text, drop empty events, remember the QQ chat kind and dispatch."""
-        att = await self._process_attachments(attachments)
+        att = await self._process_attachments(attachments, report_failures=True) if qq_chat_type == "group" else await self._process_attachments(attachments)
         text = content
         voice_transcripts = att["voice_transcripts"]
         if voice_transcripts:
@@ -827,10 +831,19 @@ class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
         if att["attachment_info"]:
             text = self._append_block(text, att["attachment_info"])
         image_urls, image_media_types = att["image_urls"], att["image_media_types"]
+        for item in background_media or []:
+            path = item["local_path"]
+            if await asyncio.to_thread(os.path.isfile, path):
+                image_urls.append(path)
+                image_media_types.append(item["content_type"])
+                text = self._append_block(text, "[群聊背景图片 " + str(len(image_urls)) + "] " +
+                    json.dumps({k: item[k] for k in ("sender_id", "name", "timestamp", "message_id", "local_path")}, ensure_ascii=False))
+        if background_media:
+            logger.info("[%s] Archived group images attached: count=%d", self._log_tag, len(image_urls))
         if verbose:
             logger.info("[%s] After processing: images=%d, voice=%d", self._log_tag, len(image_urls), len(voice_transcripts))
 
-        quoted = await self._process_quoted_context(d)
+        quoted = await self._process_quoted_context(d, report_failures=True) if qq_chat_type == "group" else await self._process_quoted_context(d)
         text = self._merge_quote_into(text, quoted["quote_block"])
         if quoted["image_urls"]:
             image_urls = image_urls + quoted["image_urls"]
@@ -849,7 +862,7 @@ class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
 
     # ── Quoted-message handling ──
 
-    async def _process_quoted_context(self, d: dict[str, Any]) -> dict[str, Any]:
+    async def _process_quoted_context(self, d: dict[str, Any], *, report_failures: bool = False) -> dict[str, Any]:
         """Process the quoted message a user is replying to (``message_type == 103``;
         referenced content + attachments live in ``msg_elements``). Quoted attachments
         go through _process_attachments so quoted voice gets STT and quoted images are
@@ -868,7 +881,7 @@ class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
         quoted_text_parts = [t for t in (str(e.get("content", "")).strip() for e in elements) if t]
         all_attachments = [
             a for e in elements if isinstance(e.get("attachments"), list) for a in e["attachments"] if isinstance(a, dict)]
-        att_result = await self._process_attachments(all_attachments)
+        att_result = await self._process_attachments(all_attachments, report_failures=True) if report_failures else await self._process_attachments(all_attachments)
         quoted_images = att_result.get("image_urls") or []
 
         lines: list[str] = [" ".join(quoted_text_parts)] if quoted_text_parts else []
@@ -908,7 +921,7 @@ class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
         logger.debug("Unknown media content_type '%s', defaulting to TEXT", first_type)
         return MessageType.TEXT
 
-    async def _process_attachments(self, attachments: Any) -> dict[str, Any]:
+    async def _process_attachments(self, attachments: Any, *, report_failures: bool = False) -> dict[str, Any]:
         """Process inbound attachments uniformly. Returns ``{"image_urls",
         "image_media_types", "voice_transcripts", "attachment_info"}`` (cached image
         paths + MIME types, "[Voice] ..." transcripts, text description of other files)."""
@@ -950,7 +963,8 @@ class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
                 logger.debug("[%s] Failed to cache %s: %s", self._log_tag, "image" if is_image else "attachment", exc)
                 cached_path = None
             if not cached_path:
-                other_attachments.append(f"[附件获取失败: {filename or ct}；链接可能已失效，请重新发送或引用原消息]")
+                if report_failures:
+                    other_attachments.append(f"[附件获取失败: {filename or ct}；链接可能已失效，请重新发送或引用原消息]")
                 continue
             if not is_image:
                 label = "video" if ct.startswith("video/") else "file"
@@ -1584,7 +1598,10 @@ class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
                 body["content"] = caption[: self.MAX_MESSAGE_LENGTH]
             if reply_to:
                 body["msg_id"] = reply_to
-            return await self._post_message(self._messages_path(chat_type, chat_id), body)
+            result = await self._post_message(self._messages_path(chat_type, chat_id), body)
+            if chat_type == "group":
+                await self._remember_group_media(chat_id, media_source, kind, caption, result)
+            return result
         except UploadDailyLimitExceededError as exc:
             # Non-retryable quota hit; give the model actionable text.
             logger.warning("[%s] Daily upload limit exceeded for %s (%s)", self._log_tag, exc.file_name, exc.file_size_human)
