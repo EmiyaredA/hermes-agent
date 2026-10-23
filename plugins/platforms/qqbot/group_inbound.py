@@ -112,7 +112,12 @@ class QQGroupContextMixin:
         attachments = data.get("attachments")
         background_media = []
         if record:
-            if not attachments and not data.get("msg_elements"):
+            member = record["member"]
+            if re.search(r"头像|\b(?:avatar|pfp)\b|profile\s+pic(?:ture)?", content, re.IGNORECASE) and member.get("avatar_status") == "saved":
+                background_media = [{"kind": "profile_avatar", "sender_id": sender, "name": name,
+                    "timestamp": timestamp, "message_id": message_id, "content_type": "image/jpeg",
+                    "local_path": member["avatar_local_path"]}]
+            elif not attachments and not data.get("msg_elements"):
                 background_media = await self._group_context.background_images(group_id, message_id)
         elif not attachments and not data.get("msg_elements"):
             reference = await self._group_context.media_for_request(group_id, content, message_id)

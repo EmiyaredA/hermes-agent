@@ -836,8 +836,15 @@ class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
             if await asyncio.to_thread(os.path.isfile, path):
                 image_urls.append(path)
                 image_media_types.append(item["content_type"])
-                text = self._append_block(text, "[群聊背景图片 " + str(len(image_urls)) + "] " +
-                    json.dumps({k: item[k] for k in ("sender_id", "name", "timestamp", "message_id", "local_path")}, ensure_ascii=False))
+                avatar = item.get("kind") == "profile_avatar"
+                label = "群成员头像" if avatar else "群聊背景图片"
+                metadata = {k: item[k] for k in ("sender_id", "name", "timestamp", "message_id", "local_path")}
+                if avatar:
+                    metadata["kind"] = "profile_avatar"
+                text = self._append_block(text, "[" + label + " " + str(len(image_urls)) + "] " + json.dumps(metadata, ensure_ascii=False))
+                if avatar:
+                    text = self._append_block(text, "这张是上述 sender_id 成员的头像，已附带实际图片；不是聊天中发送的图片。"
+                        "按 ID 对应提问对象，直接看图回答；只给路径或工具加载提示不能当作已看清的证据。")
         if background_media:
             logger.info("[%s] Archived group images attached: count=%d", self._log_tag, len(image_urls))
         if verbose:

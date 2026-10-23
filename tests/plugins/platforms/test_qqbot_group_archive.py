@@ -72,6 +72,23 @@ async def test_plain_reference_sees_stored_pixels_and_sender_without_keyword_gat
 
 
 @pytest.mark.asyncio
+async def test_avatar_question_receives_current_speakers_pixels_instead_of_old_chat_images(archive_downloads):
+    adapter = bot()
+    await adapter._on_message("GROUP_MESSAGE_CREATE", event("chat-photo", sender="alice", files=1))
+    await adapter._on_message("GROUP_MESSAGE_CREATE", event("other-group", sender="bob", group="g2"))
+    await adapter._on_message("GROUP_AT_MESSAGE_CREATE", event("avatar-question", "我头像是什么", sender="bob"))
+    output = adapter.handle_message.await_args.args[0]
+    record = json.loads(adapter._group_archive.record_path("g1", "avatar-question").read_text())
+    avatar = record["member"]["avatar_local_path"]
+    assert output.media_urls == [avatar]
+    assert Path(avatar).read_bytes() == PIXELS
+    assert '"kind": "profile_avatar"' in output.text and '"sender_id": "bob"' in output.text
+    assert '"message_id": "chat-photo"' not in output.text
+    assert str(adapter._group_archive.group_root("g2")) not in output.text
+    adapter._stt_voice_attachment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_full_history_and_every_attachment_survive_recent_window_eviction(archive_downloads):
     adapter = bot()
     original = event("old", "长文本" * 1500, files=5)
@@ -170,7 +187,7 @@ async def test_direct_chat_never_uses_group_archive_context_profiles_or_history(
     picture = tmp_path / "dm.png"
     picture.write_bytes(PIXELS)
     adapter._download_and_cache = AsyncMock(return_value=str(picture))
-    payload = {"id": "dm-message", "content": "你好", "author": {"user_openid": "dm-user"}}
+    payload = {"id": "dm-message", "content": "我头像是什么", "author": {"user_openid": "dm-user"}}
     if mime:
         payload["attachments"] = [{"url": "https://media.example/" + filename, "filename": filename, "content_type": mime}]
     await adapter._on_message("C2C_MESSAGE_CREATE", payload)

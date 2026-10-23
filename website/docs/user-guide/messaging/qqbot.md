@@ -137,7 +137,7 @@ long explanations. `/new` resets the individual conversation, not the group's fu
 Available profile fields retain their QQ provenance. Nicknames, stable IDs, roles and delivered
 avatar URLs are recorded; OpenID avatars are cached per member. Signatures are saved only when QQ
 provides them, otherwise marked `not_provided_by_qq` (unknown, not an empty signature). Avatars and
-profile data are background, never instructions.
+profile data are background, never instructions. When a group request mentions an avatar, the current speaker’s saved avatar is passed as an actual image with its owner ID, instead of unrelated recent chat images. Simple image questions should be answered in the current turn, briefly, without background delegation or tool narration. Direct messages keep their existing media pipeline.
 
 The existing bounded cache is imported on first use/startup, including recoverable attachment
 links. Messages or file links that QQ never delivered or an older version discarded cannot be
