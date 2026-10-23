@@ -109,7 +109,9 @@ platforms:
 Restart the gateway after changing this configuration. Existing group allowlists still apply.
 Ordinary messages are recorded without model calls, downloads or replies. When the bot is
 mentioned, recent messages from that group are attached as background through `channel_context`.
-Both QQ event variants are deduplicated so the same request is answered once. A bare mention
+Full-message mode recognizes QQ's `mentions[].is_you` marker even when its group-scoped
+mention ID differs from the READY identity and no separate AT event arrives. Mentioning another
+bot does not trigger a reply. Both QQ event variants are deduplicated so the same request is answered once. A bare mention
 asks the bot to respond to the recent discussion. Successful bot text replies are also recorded.
 Per-user conversation histories remain separate; changing `group_sessions_per_user` is unnecessary.
 
@@ -120,7 +122,7 @@ expired entries are removed when that group next receives a message. The adapter
 messages sent before full-group intake was enabled. Background media is represented by labels;
 voice uses QQ-provided ASR text when available and does not invoke a separate transcription model.
 Disable `enabled` to stop new background storage and inclusion; existing cache files are retained
-until explicitly removed. No message contents are written to the intake status log.
+until explicitly removed. Intake logs record counts and admitted requests record background character counts, without message contents.
 
 ## Voice Messages (STT)
 

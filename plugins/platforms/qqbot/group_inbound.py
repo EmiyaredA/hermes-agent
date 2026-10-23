@@ -40,11 +40,18 @@ class QQGroupContextMixin:
     def _group_addressed(self, event_type: str, data: dict[str, Any], group_id: str) -> bool:
         raw_mentions = data.get("mentions")
         mentions = [m for m in (raw_mentions if isinstance(raw_mentions, list) else []) if isinstance(m, dict)]
+        # In full-message mode QQ can omit the separate AT event and use a group-scoped
+        # mention ID, unrelated to READY.user.id. QQ's is_you flag identifies this bot.
+        self_mentions = [m for m in mentions if m.get("is_you") is True]
+        for mention in self_mentions:
+            self._qq_group_self_ids.setdefault(group_id, set()).update(_ids(mention))
         if event_type == "GROUP_AT_MESSAGE_CREATE":
-            bots = [m for m in mentions if m.get("bot") is True]
-            # Only an explicit AT event can teach a group-scoped self identifier.
-            if len(bots) == 1:
+            bots = [m for m in mentions if m.get("bot") is True and m.get("is_you") is not False]
+            # Older AT events may lack is_you; a single bot mention is unambiguous here.
+            if not self_mentions and len(bots) == 1:
                 self._qq_group_self_ids.setdefault(group_id, set()).update(_ids(bots[0]))
+            return True
+        if self_mentions:
             return True
         own_ids = self._qq_self_ids | self._qq_group_self_ids.get(group_id, set())
         if any(_ids(mention) & own_ids for mention in mentions):
@@ -84,6 +91,8 @@ class QQGroupContextMixin:
         content = self._strip_at_mention(content)
         if not content and not data.get("attachments") and not data.get("msg_elements"):
             content = "请结合上面的本群近期聊天回应。"
+        logger.info("[%s] Group request admitted: group=%s event=%s context_chars=%d",
+                    self._log_tag, group_id, event_type, len(context or ""))
         await self._ingest(
             data, message_id, content, data.get("attachments"), timestamp,
             chat_id=group_id, qq_chat_type="group", channel_context=context,

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -199,3 +200,44 @@ async def test_real_plugin_discovery_and_yaml_loader_enable_group_background(mon
     assert "真实配置链路背景" in adapter.handle_message.await_args.args[0].channel_context
     assert adapter._group_context.settings.max_messages == 20
     assert adapter._group_context.root.is_relative_to(home)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,expected", [
+    ("<@group-self> 我刚刚说了什么", "我刚刚说了什么"),
+    ("<@group-self> /new", "/new"),
+    ("<@group-self>", "请结合上面的本群近期聊天回应。"),
+])
+async def test_full_event_self_marker_dispatches_first_mention_with_background(text, expected):
+    adapter = make_adapter()
+    await adapter._on_message("GROUP_MESSAGE_CREATE", message(text="我不吃牛肉"))
+    adapter._process_attachments.assert_not_awaited()
+    payload = message("m2", text=text, sender="bob")
+    # QQ's group-scoped mention ID differs from READY's bot ID; bot can be absent.
+    payload["mentions"] = [{"id": "group-self", "is_you": True}]
+    await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == expected
+    assert "我不吃牛肉" in event.channel_context
+    assert "我刚刚说了什么" not in event.channel_context
+    from gateway.run_inbound import GatewayInboundMixin
+    runner = SimpleNamespace(config=SimpleNamespace(group_sessions_per_user=True))
+    model_text = GatewayInboundMixin._prefix_inbound_sender_context(runner, event, event.source, event.text)
+    assert "我不吃牛肉" in model_text
+    assert model_text.endswith("[New message]\n" + expected)
+    await adapter._on_message("GROUP_AT_MESSAGE_CREATE", payload)
+    assert adapter.handle_message.await_count == 1
+    adapter._process_attachments.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker", [False, "true", 1, None])
+async def test_foreign_bot_or_non_boolean_self_marker_never_dispatches_or_teaches_identity(marker):
+    adapter = make_adapter()
+    payload = message(text="<@other-bot> 总结")
+    payload["mentions"] = [{"id": "other-bot", "bot": True, "is_you": marker}]
+    await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+    await adapter._on_message("GROUP_MESSAGE_CREATE", message("m2", text="<@other-bot> 再问一次"))
+    adapter.handle_message.assert_not_awaited()
+    assert "other-bot" not in adapter._qq_group_self_ids.get("group-a", set())
