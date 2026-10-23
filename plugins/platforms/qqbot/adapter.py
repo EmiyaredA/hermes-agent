@@ -1554,6 +1554,13 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         chat_type = self._guess_chat_type(chat_id)
         if chat_type == "guild":
             return SendResult(success=False, error="Guild media send not supported via this path")
+        # QQ groups only accept 被动回复 (a passive reply tied to an inbound msg_id); a media
+        # message without one comes back as 主动消息失败, 无权限. The shared gateway delivery
+        # path (send_multiple_images / non-image MEDIA) calls these senders WITHOUT reply_to,
+        # so fall back to this chat's last inbound id — the same source send_typing and the
+        # approval prompt already use.
+        if not reply_to:
+            reply_to = self._last_msg_id.get(chat_id)
 
         try:
             if self._is_url(media_source):
