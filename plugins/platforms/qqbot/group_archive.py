@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .group_archive_io import copy_private_file, append_index, download_file, public_files, read_json, write_json
+from .group_archive_io import download_avatar, copy_private_file, append_index, download_file, public_files, read_json, write_json
 from .group_media import attachment_references
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ class GroupArchive:
                 logger.warning("QQ archive attachment download failed: group=%s error=%s", record["group_id"], type(exc).__name__)
             existing[reference["url"]] = item
 
-    async def _member(self, group_id: str, sender: str, author: dict[str, Any], client, headers) -> dict[str, Any]:
+    async def _member(self, group_id: str, sender: str, author: dict[str, Any], client, headers, *, force: bool = False) -> dict[str, Any]:
         from httpx import HTTPError
         path = self.group_root(group_id) / "members" / (_key(sender) + ".json")
         previous = await asyncio.to_thread(read_json, path) or {}
@@ -77,16 +77,17 @@ class GroupArchive:
         if sender == "assistant":
             await asyncio.to_thread(write_json, path, member)
             return member
-        avatar_url = author.get("avatar") or author.get("avatar_url") or previous.get("avatar_source_url")
-        if not avatar_url:
-            avatar_url = f"https://q.qlogo.cn/qqapp/{self.app_id}/{sender}/640"
-        if member.get("avatar_checked_at", 0) < time.time() - 86400 or previous.get("avatar_source_url") != avatar_url:
+        from urllib.parse import quote
+        avatar_url = "https://q.qlogo.cn/qqapp/" + quote(self.app_id, safe="") + "/" + quote(sender, safe="") + "/640"
+        interval = 86400 if previous.get("avatar_status") == "saved" else 300
+        if force or member.get("avatar_checked_at", 0) < time.time() - interval or previous.get("avatar_source_url") != avatar_url:
             target = path.with_suffix(".avatar.jpg")
             try:
-                await download_file(client, {}, str(avatar_url), target)
+                await download_avatar(self.app_id, sender, target)
                 member.update(avatar_local_path=str(target), avatar_source_url=avatar_url, avatar_status="saved")
+                member.pop("avatar_error", None)
             except (OSError, ValueError, HTTPError) as exc:
-                member.update(avatar_status="unavailable", avatar_error=type(exc).__name__)
+                member.update(avatar_status="unavailable", avatar_error=type(exc).__name__, avatar_source_url=avatar_url)
             member["avatar_checked_at"] = time.time()
         await asyncio.to_thread(write_json, path, member)
         return member
@@ -173,3 +174,14 @@ class GroupArchive:
         except OSError as exc:
             record["files"] = [{"filename": output["filename"], "content_type": output["content_type"],
                                 "status": "failed", "error": type(exc).__name__}]
+
+
+    async def refresh_failed_profiles(self, group_id: str, client, headers) -> None:
+        for path in (self.group_root(group_id) / "members").glob("*.json"):
+            member = await asyncio.to_thread(read_json, path)
+            if member and member.get("avatar_status") == "unavailable":
+                await self._member(group_id, member["sender_id"], member, client, headers, force=True)
+
+    async def latest_member(self, group_id: str, sender: str) -> dict[str, Any]:
+        path = self.group_root(group_id) / "members" / (_key(sender) + ".json")
+        return await asyncio.to_thread(read_json, path) or {}

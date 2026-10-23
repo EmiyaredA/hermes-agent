@@ -144,6 +144,7 @@ class QQGroupContextMixin:
         async with self._archive_seed_locks.setdefault(group_id, asyncio.Lock()):
             if group_id in self._archive_seeded:
                 return
+            await self._group_archive.refresh_failed_profiles(group_id, self._http_client, self._qq_media_headers())
             cache_path = self._group_context.root / (hashlib.sha256(group_id.encode()).hexdigest() + ".json")
             if cache_path.exists():
                 try:
@@ -162,8 +163,9 @@ class QQGroupContextMixin:
                         record = await self._group_archive.record("IMPORTED_BOUNDED_CACHE", data, self._http_client, self._qq_media_headers())
                     elif record.get("archive_state") == "pending":
                         record = await self._group_archive.record("RECOVERED_PENDING_EVENT", record["raw_message"], self._http_client, self._qq_media_headers())
+                    member = await self._group_archive.latest_member(group_id, item["sender"]) or record["member"]
                     await self._group_context.observe(group_id, item["id"], item["sender"], item["name"],
-                        item["timestamp"], item["text"], files=self._group_archive.files(record), member=self._group_archive.profile_summary(record["member"]))
+                        item["timestamp"], item["text"], files=self._group_archive.files(record), member=self._group_archive.profile_summary(member))
             await self._group_archive.recover_pending(group_id, self._http_client, self._qq_media_headers())
             self._archive_seeded.add(group_id)
 

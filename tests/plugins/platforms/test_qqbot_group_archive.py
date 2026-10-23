@@ -24,7 +24,11 @@ def archive_downloads(monkeypatch):
         calls.append(url)
         return len(PIXELS)
 
+    async def avatar(app_id, sender_id, destination):
+        return await download(None, {}, "https://q.qlogo.cn/qqapp/" + app_id + "/" + sender_id + "/640", destination)
+
     monkeypatch.setattr("plugins.platforms.qqbot.group_archive.download_file", download)
+    monkeypatch.setattr("plugins.platforms.qqbot.group_archive.download_avatar", avatar)
     return calls
 
 
@@ -196,3 +200,28 @@ async def test_direct_chat_media_send_never_archives_as_group_media(archive_down
     assert result.success
     adapter._remember_group_media.assert_not_awaited()
     assert not archive_downloads
+
+
+@pytest.mark.asyncio
+async def test_avatar_fetch_keeps_fixed_qq_https_host_and_refuses_redirects(monkeypatch, tmp_path):
+    import httpx
+    from plugins.platforms.qqbot.group_archive_io import download_avatar
+    requests = []
+    options = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, content=PIXELS)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+
+    def make_client(**kwargs):
+        options.append(kwargs)
+        return client
+
+    monkeypatch.setattr(httpx, "AsyncClient", make_client)
+    target = tmp_path / "avatar.jpg"
+    await download_avatar("app/../../", "user@internal?x=y", target)
+    assert target.read_bytes() == PIXELS
+    assert requests[0].url.host == "q.qlogo.cn" and requests[0].url.scheme == "https"
+    assert options[0]["follow_redirects"] is False

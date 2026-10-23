@@ -64,6 +64,10 @@ async def download_file(client, headers: dict[str, str], url: str, destination: 
     """Save original bytes (including audio) without analysis, conversion or transcription."""
     if not await async_is_safe_url(url):
         raise ValueError("unsafe_attachment_url")
+    return await _stream_file(client, headers, url, destination)
+
+
+async def _stream_file(client, headers: dict[str, str], url: str, destination: Path) -> int:
     private_directory(destination.parent)
     limit = get_inbound_media_max_bytes()
     temporary = None
@@ -105,3 +109,19 @@ def copy_private_file(source: Path, destination: Path) -> int:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+async def download_avatar(app_id: str, sender_id: str, destination: Path) -> int:
+    """Fetch only QQ's fixed HTTPS avatar service; never follow caller-controlled URLs.
+
+    Local TUN proxies can resolve this CDN to benchmark fake IPs. The fixed host, TLS hostname
+    verification and disabled redirects preserve the destination boundary without changing global
+    URL safety or allowing private attachment URLs.
+    """
+    import httpx
+    from urllib.parse import quote
+    from gateway.platforms.base import gateway_trust_env
+
+    url = "https://q.qlogo.cn/qqapp/" + quote(app_id, safe="") + "/" + quote(sender_id, safe="") + "/640"
+    async with httpx.AsyncClient(trust_env=gateway_trust_env(), follow_redirects=False) as client:
+        return await _stream_file(client, {}, url, destination)
