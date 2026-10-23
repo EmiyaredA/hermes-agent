@@ -78,6 +78,7 @@ class QQGroupContextMixin:
         if not addressed or self._dedup.is_duplicate(f"group-request:{group_id}:{message_id}"):
             return
         content = str(data.get("content") or "").strip()
+        own_ids = self._qq_self_ids | self._qq_group_self_ids.get(group_id, set())
         for identity in own_ids:
             content = re.sub(r"<@!?" + re.escape(identity) + r">\s*", "", content)
         content = self._strip_at_mention(content)
