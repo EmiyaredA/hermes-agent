@@ -11,6 +11,7 @@ from typing import Any
 from hermes_constants import get_hermes_home
 
 from .group_context import GroupContextSettings, GroupContextStore, describe_group_message
+from .group_media import attachment_references
 
 logger = logging.getLogger(__name__)
 GROUP_EVENTS = frozenset({"GROUP_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE"})
@@ -76,7 +77,8 @@ class QQGroupContextMixin:
         timestamp = str(data.get("timestamp") or "")
         text = describe_group_message(data, self._group_context.settings.max_message_chars)
         context = await self._group_context.observe(
-            group_id, message_id, sender, name, timestamp, text or "[空消息]", include_context=addressed)
+            group_id, message_id, sender, name, timestamp, text or "[空消息]", include_context=addressed,
+            attachments=attachment_references(data))
         if event_type == "GROUP_MESSAGE_CREATE":
             count = self._observed_group_counts.get(group_id, 0) + 1
             self._observed_group_counts[group_id] = count
@@ -91,10 +93,19 @@ class QQGroupContextMixin:
         content = self._strip_at_mention(content)
         if not content and not data.get("attachments") and not data.get("msg_elements"):
             content = "有人在群里叫你，接着当前话题自然回一句；没有明确话题就简短应一声。"
+        attachments = data.get("attachments")
+        if not attachments and not data.get("msg_elements"):
+            reference = await self._group_context.media_for_request(group_id, content, message_id)
+            if reference:
+                attachments = reference["attachments"]
+                content += ("\n\n[本群已选中的历史附件，来自 " + reference["name"] + "；" +
+                            reference["timestamp"] + "，下方为本次附件处理结果；这不是新的群友发言。]")
+                logger.info("[%s] Group attachment selected: group=%s count=%d",
+                            self._log_tag, group_id, len(attachments))
         logger.info("[%s] Group request admitted: group=%s event=%s context_chars=%d",
                     self._log_tag, group_id, event_type, len(context or ""))
         await self._ingest(
-            data, message_id, content, data.get("attachments"), timestamp,
+            data, message_id, content, attachments, timestamp,
             chat_id=group_id, qq_chat_type="group", channel_context=context,
             user_id=sender, user_name=name, chat_type="group")
 

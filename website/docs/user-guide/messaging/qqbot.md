@@ -121,8 +121,16 @@ The cache stores bounded text, sender identifiers, display names and timestamps 
 files under the profile's `cache/qqbot/<app-key>/group-context/`. Each file is group-specific,
 atomically replaced and readable only by the operating-system owner. It survives gateway restarts;
 expired entries are removed when that group next receives a message. The adapter cannot retrieve
-messages sent before full-group intake was enabled. Background media is represented by labels;
-voice uses QQ-provided ASR text when available and does not invoke a separate transcription model.
+messages sent before full-group intake was enabled. Passive media is represented by labels; up to
+three attachment references per message are also retained privately, without downloading anything.
+When an addressed request refers to an image, video or document, the adapter fetches attachments from
+the latest matching message in this group through the existing media pipeline. An exact filename
+selects that file instead; current or quoted attachments take precedence. Images enter the image
+input pipeline, while video/document paths are available to the agent's tools; receiving a file does
+not automatically mean its contents have been analyzed. Smalltalk and slash commands fetch nothing.
+QQ links can expire: on download failure the bot asks for a resend or quote. Older text-only caches
+remain readable but lost attachment references cannot be recovered. Passive voice uses QQ-provided
+ASR text when available and does not invoke a separate transcription model.
 Disable `enabled` to stop new background storage and inclusion; existing cache files are retained
 until explicitly removed. Intake logs record counts and admitted requests record background character counts, without message contents.
 

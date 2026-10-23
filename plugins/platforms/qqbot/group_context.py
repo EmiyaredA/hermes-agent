@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .group_media import attachment_references, select_group_media
+
 logger = logging.getLogger(__name__)
 
 
@@ -121,8 +123,11 @@ class GroupContextStore:
         now = time.time()
         cutoff = now - self.settings.max_age_hours * 3600
         messages = [m for m in self._read(path, group_id) if cutoff <= m["received_at"] <= now + 60]
-        if not any(m["id"] == message["id"] for m in messages):
+        existing = next((m for m in messages if m["id"] == message["id"]), None)
+        if existing is None:
             messages.append(message)
+        elif message.get("attachments"):
+            existing["attachments"] = message["attachments"]
         messages = messages[-self.settings.max_messages:]
         self._write(path, group_id, messages)
         if not include_context:
@@ -158,12 +163,16 @@ class GroupContextStore:
         return header + "\n".join(reversed(lines)) if lines else None
 
     async def observe(self, group_id: str, message_id: str, sender_id: str, name: str,
-                      timestamp: str, text: str, *, include_context: bool = False) -> str | None:
+                      timestamp: str, text: str, *, include_context: bool = False,
+                      attachments: list[dict[str, Any]] | None = None) -> str | None:
         if not self.settings.enabled:
             return None
         message = {"id": message_id, "sender": _inline(sender_id, 150),
                    "name": _inline(name or sender_id, 100), "timestamp": _inline(timestamp, 80),
                    "text": text[:self.settings.max_message_chars], "received_at": time.time()}
+        references = attachment_references({"attachments": attachments})
+        if references:
+            message["attachments"] = references
         async with self._locks.setdefault(group_id, asyncio.Lock()):
             try:
                 return await asyncio.to_thread(self._exchange, group_id, message, include_context)
@@ -171,3 +180,13 @@ class GroupContextStore:
                 # A cache failure must never retry an already-sent QQ reply or suppress a new request.
                 logger.warning("QQ group context cache write failed", exc_info=True)
                 return None
+
+
+    async def media_for_request(self, group_id: str, query: str, current_id: str) -> dict[str, Any] | None:
+        if not self.settings.enabled or query.lstrip().startswith("/"):
+            return None
+        async with self._locks.setdefault(group_id, asyncio.Lock()):
+            messages = await asyncio.to_thread(self._read, self._path(group_id), group_id)
+        now = time.time()
+        messages = [m for m in messages if now - self.settings.max_age_hours * 3600 <= m["received_at"] <= now + 60]
+        return select_group_media(messages[-self.settings.max_messages:], query, current_id)

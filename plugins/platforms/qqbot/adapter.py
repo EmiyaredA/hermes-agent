@@ -948,8 +948,9 @@ class QQAdapter(QQGroupContextMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
                 cached_path = await self._download_and_cache(url, ct, filename)
             except Exception as exc:
                 logger.debug("[%s] Failed to cache %s: %s", self._log_tag, "image" if is_image else "attachment", exc)
-                continue
+                cached_path = None
             if not cached_path:
+                other_attachments.append(f"[附件获取失败: {filename or ct}；链接可能已失效，请重新发送或引用原消息]")
                 continue
             if not is_image:
                 label = "video" if ct.startswith("video/") else "file"
